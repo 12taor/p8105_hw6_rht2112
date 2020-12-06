@@ -1,8 +1,10 @@
 ---
 title: "Homework 6"
 author: "Rachel Tao"
-date: "11/22/20"
-output: github_document
+date: "12/06/20"
+output: 
+  github_document:
+    pandoc_args: --webtex
 ---
 
 ```{r setup, include = FALSE}
@@ -10,6 +12,7 @@ library(tidyverse)
 library(modelr)
 library(mgcv)
 library(purrr)
+library(patchwork)
 
 knitr::opts_chunk$set(
   fig.width = 6,
@@ -33,7 +36,7 @@ scale_fill_discrete = scale_fill_viridis_d
 
 import data
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 homicide_df <- 
   read_csv("./data/homicide-data.csv", na = c("", "NA", "Unknown")) %>% 
   mutate(
@@ -107,7 +110,7 @@ model_results_df %>%
 
 import data
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 child_birthweight <- read_csv("./data/birthweight.csv") %>% 
   mutate(
     babysex = as.factor(babysex),
@@ -137,10 +140,6 @@ model_fit <-
   child_birthweight %>% 
   add_residuals(model_1) %>% 
   add_predictions(model_1)
-
-model_fit %>% 
-  ggplot(aes(x = resid)) +
-  geom_density()
 
 model_fit %>%  
   ggplot(aes(x = pred, y = resid)) +
@@ -205,7 +204,7 @@ Model 1 and model 2 are comparable, but the RMSE for model 2 is larger. Since th
 
 import data
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 weather_df = 
   rnoaa::meteo_pull_monitors(
     c("USW00094728"),
@@ -222,6 +221,75 @@ weather_df =
 linear regression model
 
 ```{r}
-lm(tmax ~ tmin, data = weather_df)
+temp_model = lm(tmax ~ tmin, data = weather_df)
 ```
 
+
+Use modelr to bootstrap
+
+```{r message=FALSE, warning=FALSE}
+boot_results =
+  weather_df %>% 
+  bootstrap(5000, id = "strap_number") %>% 
+  mutate(
+    models = map(.x = strap, ~lm(tmax ~ tmin, data = .x)),
+    fit = map(models, broom::glance),
+    param = map(models, broom::tidy)
+  ) %>% 
+  select(strap_number, param, fit) %>% 
+  unnest(c(param, fit), names_repair = "universal")
+
+boot_results <- 
+  boot_results %>% 
+  select(strap_number, term, estimate, r.squared) %>% 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) %>% 
+  rename(
+    intercept = '(Intercept)'
+  ) %>% 
+  mutate(
+    logbetas = log(intercept * tmin)
+  )
+
+```
+
+
+Plot distributions of $\hat{R}^2$ and $log(\hat{\beta}_0 * \hat{\beta}_1)$:
+
+```{r}
+r2_plot <-   
+  boot_results %>% 
+  ggplot(aes(x = r.squared)) +
+  geom_density()
+
+logbetas_plot <- 
+  boot_results %>% 
+  ggplot(aes(x = logbetas)) +
+  geom_density() +
+  xlab("log of product of beta_0 and beta_1")
+
+r2_plot + logbetas_plot
+```
+
+
+The distributions of estimates for both $\hat{R}^2$ and $log(\hat{\beta}_0 * \hat{\beta}_1)$ appear close to normal. There is a slightly longer left-tail on the $\hat{R}^2$ distribution. The mean estimated value for $\hat{R}^2$ is close to 0.91 and the mean estimated value for$log(\hat{\beta}_0 * \hat{\beta}_1)$ is close to 2.01.
+
+Compute estimates and 95% CI
+
+```{r}
+boot_summary <- 
+  boot_results %>% 
+  summarize(
+    mean_r2 = mean(r.squared),
+    r2_ci_lower = quantile(r.squared, 0.025),
+    r2_ci_upper = quantile(r.squared, 0.975),
+    mean_logbetas = mean(logbetas),
+    logbetas_ci_lower = quantile(logbetas, 0.025),
+    logbetas_ci_upper = quantile(logbetas, 0.975)
+  )
+
+```
+
+The bootstrapped estimate for $\hat{R}^2$ is `r boot_summary %>% pull(mean_r2) %>% round(digits = 2)` and the 95% confidence interval is (`r boot_summary %>% pull(r2_ci_lower) %>% round(digits = 2)`, `r boot_summary %>% pull(r2_ci_upper) %>% round(digits = 2)`). The bootstrapped estimate for $log(\hat{\beta}_0 * \hat{\beta}_1)$ is `r boot_summary %>% pull(mean_logbetas) %>% round(digits = 2)` and the 95% confidence interval is (`r boot_summary %>% pull(logbetas_ci_lower) %>% round(digits = 2)`, `r boot_summary %>% pull(logbetas_ci_upper) %>% round(digits = 2)`).
