@@ -9,6 +9,7 @@ output: github_document
 library(tidyverse)
 library(modelr)
 library(mgcv)
+library(purrr)
 
 knitr::opts_chunk$set(
   fig.width = 6,
@@ -70,7 +71,7 @@ glm(resolution ~ victim_age + victim_race + victim_sex,
 
 ```
 
-Try this across citiies
+Try this across cities
 
 ```{r}
 model_results_df <-   
@@ -107,22 +108,98 @@ model_results_df %>%
 import data
 
 ```{r}
-child_birthweight <- read_csv("./data/birthweight.csv")
+child_birthweight <- read_csv("./data/birthweight.csv") %>% 
+  mutate(
+    babysex = as.factor(babysex),
+    fincome = as.factor(fincome),
+    frace = as.factor(frace),
+    malform = as.factor(malform),
+    mrace = as.factor(mrace),
+  )
+
 ```
 
-```{r eval=FALSE}
-model_fit = ...
-  
-child_birthweight %>% 
-  modelr::add_residuals(model_fit) %>% 
+This dataset includes factors potentially affecting child birthweight for `r nrow(child_birthweight)` children. Variables include birthweight (grams), child's sex (coded as 1 for male, 2 for female), head circumference at birth, length at birth (cm), mother's weight at time of delivery (lbs), family monthly income (in hundreds, rounded), each parent's race (1 = white, 2 = Black, 3 = Asian, 4 = Puerto Rican, 8 = other, 9 = unknown), gestational age in weeks, presence or absence of malformations that could impact birthweight (0 if absent, 1 if present), mother's age at menarche (years), mother's height (in), mother's age at delivery (years), number of live births prior to this pregnancy, previous numer of low birth weight babies, number of small for gestational age babies, mother's pre-pregnancy BMI, average number of cigarettes per day smoked by mother during pregnancy, and mother's weigth gain during pregnancy (lbs).  I converted coded categorical variables from numeric to factor, including child's sex, family income, each parent's race, and presence or absence of malformations that could affect weight. It looks like there are  `r child_birthweight %>% is.na() %>% sum()` missing values.
+
+To build model 1, I used theory to inform which variables to include and tested several biologically plausible interaction terms before. I only included statistically significant interactions in the final model.
+
+I chose to include birth length and birth height because they are common anthropometric measures that are likely to correlate with birth weight for healthy babies as well as for low birthweight babies. I chose gestational age at birth and average number of cigarettes smoked per day during pregnancy by mom as potential predictors of low birthweight, with the hypothesis that increased cigarette smoking and smaller gestational age at birth are associated with low birthweight. I chose to include mother's weight at the time of delivery as a potential predictor of low birthweight, with the hypothesis that higher maternal weight at delivery would be associated with high birthweight. I then tested interactions between variables that could contribute to abnormal birthweights: average number of cigarettes per day during pregnancy, gestational age at birth, and maternal weight at delivery. The only interaction that was significant was between maternal weight at time of delivery and gestational age at birth, so I included this interaction, along with anthropomorphic measures, in the final model.
+
+```{r}
+model_1 = lm(bwt ~ blength + bhead + smoken + delwt*gaweeks, data = child_birthweight)
+
+```
+
+Diagnostics: plot residuals against predicted values
+
+```{r}
+model_fit <- 
+  child_birthweight %>% 
+  add_residuals(model_1) %>% 
+  add_predictions(model_1)
+
+model_fit %>% 
   ggplot(aes(x = resid)) +
   geom_density()
-child_birthweight %>% 
-  modelr::add_residuals(model_fit) %>% 
-  ggplot(aes(x = gaweeks, y = resid)) +
-  gom_point()
+
+model_fit %>%  
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point()
+
 ```
 
+models to compare:
+
+```{r}
+model_2 = lm(bwt ~ blength + gaweeks, data = child_birthweight)
+model_3 = lm(bwt ~ bhead + blength + babysex + bhead * blength * babysex, data = child_birthweight)
+```
+
+cross validation:
+
+```{r}
+cv_df =
+  crossv_mc(child_birthweight, 100)
+
+cv_df =
+  cv_df %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+
+cv_df =
+  cv_df %>% 
+  mutate(
+    model_1 = map(.x = train, ~lm(bwt ~ blength + bhead + smoken + delwt*gaweeks, data = .x)),
+    model_2 = map(.x = train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    model_3 = map(.x = train, ~lm(bwt ~ bhead + blength + babysex + bhead * blength * babysex, data = .x))
+  ) %>% 
+  mutate(
+    rmse_1 = map2_dbl(model_1, .y = test, ~rmse(model = .x, data = .y)),
+    rmse_2 = map2_dbl(model_2, .y = test, ~rmse(model = .x, data = .y)),
+    rmse_3 = map2_dbl(model_3, .y = test, ~rmse(model = .x, data = .y))
+  )
+
+```
+
+Visualize RMSE's
+
+```{r}
+cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) %>% 
+  ggplot(aes(x = model, y = rmse)) +
+  geom_violin()
+  
+```
+
+Model 1 and model 2 are comparable, but the RMSE for model 2 is larger. Since the model 1 RMSE appears marginally smaller than model 3, I would choose model 1 for prediction.
 
 ## Problem 3
 
